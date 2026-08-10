@@ -1,0 +1,24 @@
+name: ADX 판별력 진단
+
+on:
+  workflow_dispatch:
+    inputs:
+      period:
+        description: 'ADX 기간 (기본 14)'
+        required: false
+        default: '14'
+
+jobs:
+  adx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install yfinance pandas numpy
+      - run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python adx_check.py ${{ inputs.period }} | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
