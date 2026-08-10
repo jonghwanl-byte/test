@@ -1,0 +1,24 @@
+name: 낙폭 이력
+
+on:
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: '낙폭 임계치 (%). 예: 10 = -10% 이상'
+        required: false
+        default: '10'
+
+jobs:
+  drawdown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install yfinance pandas numpy
+      - run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python drawdown.py ${{ inputs.threshold }} | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
