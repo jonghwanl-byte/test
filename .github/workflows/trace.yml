@@ -1,0 +1,29 @@
+name: 구간 비중 추적
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: '시작일 (YYYY-MM-DD)'
+        required: false
+        default: '2015-07-17'
+      end:
+        description: '종료일 (YYYY-MM-DD)'
+        required: false
+        default: '2017-02-17'
+
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install yfinance pandas numpy
+      - run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python trace.py "${{ inputs.start }}" "${{ inputs.end }}" \
+            | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
