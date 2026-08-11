@@ -1,0 +1,24 @@
+name: 비중 시나리오 비교
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: '비중 조합 (공백 구분). 비우면 기본 9종'
+        required: false
+        default: ''
+
+jobs:
+  weights:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install yfinance pandas numpy
+      - run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python weights.py ${{ inputs.scenarios }} | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
