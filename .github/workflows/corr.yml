@@ -1,0 +1,24 @@
+name: 상관관계 분석
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: '분석할 티커 (공백 구분). 비우면 QQQ XLE XLF'
+        required: false
+        default: 'QQQ XLE XLF'
+
+jobs:
+  corr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install yfinance pandas numpy
+      - run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python corr.py ${{ inputs.tickers }} | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
