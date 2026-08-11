@@ -1,0 +1,26 @@
+name: 강세 자산 재배분 검증
+
+on:
+  workflow_dispatch:
+    inputs:
+      strong:
+        description: '강세 판정 스코어 (3 = 3/3 ON 일 때만)'
+        required: false
+        default: '3'
+        type: choice
+        options: ['3', '2']
+
+jobs:
+  realloc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install yfinance pandas numpy
+      - run: |
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          python realloc.py ${{ inputs.strong }} | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
