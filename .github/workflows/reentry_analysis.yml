@@ -1,0 +1,56 @@
+name: Reentry Lag Analysis
+
+# 수동 실행 전용. 매번 돌릴 필요 없는 1회성 연구용 잡.
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "분석 티커"
+        required: false
+        default: "QQQ"
+      dd_threshold:
+        description: "대상 하락폭 (0.10 = -10%)"
+        required: false
+        default: "0.10"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install "yfinance==0.2.65" pandas numpy
+
+      - name: Run analysis
+        env:
+          TICKER: ${{ github.event.inputs.ticker }}
+          DD_THRESHOLD: ${{ github.event.inputs.dd_threshold }}
+          OUTPUT_CSV: reentry_lag_result.csv
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python reentry_lag_analysis.py
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: reentry-lag-result
+          path: reentry_lag_result.csv
+          retention-days: 30
+
+      - name: Print summary
+        if: always()
+        run: |
+          echo '### 재진입 지연 분석 결과' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat reentry_lag_result.csv >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
