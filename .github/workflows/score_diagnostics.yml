@@ -1,0 +1,67 @@
+name: Score Diagnostics
+
+# 정기 실행하지 않는다. 진단은 가설이 있을 때만 돌리는 것이고,
+# 매일 돌려서 결과를 들여다보면 그 자체가 다중검정이 된다.
+
+on:
+  workflow_dispatch:
+    inputs:
+      horizons:
+        description: "선행수익률 기간 (일, 쉼표 구분)"
+        required: false
+        default: "5,20,60"
+      cost_bps:
+        description: "편도 거래비용 (bp)"
+        required: false
+        default: "15"
+      n_boot:
+        description: "부트스트랩 횟수"
+        required: false
+        default: "500"
+      tickers:
+        description: "유니버스 재정의 (예: 385560.KS:국고채30년,148070.KS:국고채10년)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -c "import pykrx, yfinance; print('deps OK')"
+
+      - name: Run diagnostics
+        env:
+          HORIZONS: ${{ inputs.horizons }}
+          COST_BPS: ${{ inputs.cost_bps }}
+          N_BOOT: ${{ inputs.n_boot }}
+          TICKERS: ${{ inputs.tickers }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TZ: Asia/Seoul
+        run: python score_diagnostics.py
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: score-diagnostics-${{ github.run_number }}
+          path: output/
+          retention-days: 90
