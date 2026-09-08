@@ -1,0 +1,53 @@
+name: XLE Tracking Study
+
+# 일회성 진단 스크립트 — schedule 없음 → keepalive 불필요
+on:
+  workflow_dispatch:
+    inputs:
+      lag_days:
+        description: "미국 종가 반영 시차 (0/1/2)"
+        required: false
+        default: "1"
+      order_krw:
+        description: "목표 주문금액 (원)"
+        required: false
+        default: "10000000"
+      start:
+        description: "분석 시작일 (YYYY-MM-DD)"
+        required: false
+        default: "2015-05-04"
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy pykrx yfinance requests
+
+      - name: Run study
+        env:
+          LAG_DAYS: ${{ github.event.inputs.lag_days }}
+          ORDER_KRW: ${{ github.event.inputs.order_krw }}
+          START: ${{ github.event.inputs.start }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python xle_tracking_study.py
+
+      - name: Upload CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xle-tracking-${{ github.run_number }}
+          path: xle_tracking_daily.csv
+          retention-days: 30
