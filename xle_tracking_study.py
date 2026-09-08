@@ -59,23 +59,112 @@ TG_CHAT = env("TELEGRAM_CHAT_ID", "")
 # ==============================================================
 # FETCH
 # ==============================================================
-def fetch_krx(ticker: str, start: str, end: str) -> pd.DataFrame:
-    """pykrx: ETF OHLCV + NAV + 기초지수"""
+def fetch_naver(ticker: str, start: str, end: str) -> pd.DataFrame:
+    """네이버 금융 siseJson — 로그인 불필요. OHLCV만 제공(NAV 없음).
+
+    KRX 정보데이터시스템이 2025-12-27 회원제로 전환되어 pykrx는
+    KRX_ID/KRX_PW 없이는 동작하지 않는다. 이쪽이 1차 소스.
+    """
+    import json
+    import re
+    import requests
+
+    url = (
+        "https://api.finance.naver.com/siseJson.naver"
+        f"?symbol={ticker}&requestType=1"
+        f"&startTime={start.replace('-', '')}"
+        f"&endTime={end.replace('-', '')}&timeframe=day"
+    )
+    r = requests.get(url, timeout=30, headers={
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://finance.naver.com/",
+    })
+    r.raise_for_status()
+
+    # 응답이 JS 리터럴(작은따옴표, 트레일링 콤마) 형태라 정규화 필요
+    txt = r.text.strip().replace("'", '"')
+    txt = re.sub(r",\s*]", "]", txt)
+    rows = json.loads(txt)
+    if len(rows) < 2:
+        raise RuntimeError(f"네이버 데이터 없음: {ticker}")
+
+    df = pd.DataFrame(rows[1:], columns=rows[0])
+    df = df.rename(columns={
+        "날짜": "date", "시가": "시가", "고가": "고가",
+        "저가": "저가", "종가": "종가", "거래량": "거래량",
+    })
+    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
+    df = df.set_index("date").sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+
+    for c in ["시가", "고가", "저가", "종가", "거래량"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    df = df[df["종가"] > 0]
+    # 네이버는 거래대금을 주지 않으므로 종가×거래량으로 근사
+    df["거래대금"] = df["종가"] * df["거래량"]
+    return df
+
+
+def fetch_pykrx(ticker: str, start: str, end: str):
+    """pykrx 경로. satellite 와 동일하게 getter 를 두 개 시도한다.
+
+    KRX 정보데이터시스템이 2025-12-27 회원제로 전환되면서
+    get_etf_ohlcv_by_date 는 KRX_ID/KRX_PW 없이 'isin' 에러로 실패한다.
+    반면 get_market_ohlcv_by_date 는 인증 없이 동작하므로 시세는 확보된다.
+    NAV·기초지수는 ETF 엔드포인트에서만 나오므로 인증이 있을 때만 채워진다.
+
+    반환: (시세 DataFrame, NAV DataFrame or None)
+    """
     from pykrx import stock
 
-    f = start.replace("-", "")
-    t = end.replace("-", "")
+    f, t = start.replace("-", ""), end.replace("-", "")
+    px, nav = None, None
 
-    df = stock.get_etf_ohlcv_by_date(f, t, ticker)
-    if df is None or df.empty:
-        raise RuntimeError(f"pykrx 데이터 없음: {ticker}")
+    for getter in (stock.get_etf_ohlcv_by_date, stock.get_market_ohlcv_by_date):
+        try:
+            df = getter(f, t, ticker)
+        except Exception:                              # noqa: BLE001
+            continue
+        if df is None or len(df) == 0 or "종가" not in df.columns:
+            continue
 
-    df.index = pd.to_datetime(df.index)
-    df = df[~df.index.duplicated(keep="last")].sort_index()
+        df.index = pd.to_datetime(df.index)
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        df = df[df["종가"] > 0]
 
-    # 거래정지/휴장 잔재 제거
-    df = df[df["종가"] > 0]
-    return df
+        if "NAV" in df.columns:                        # ETF 엔드포인트 성공
+            nav = df[[c for c in ("NAV", "기초지수") if c in df.columns]]
+        if px is None or len(df) > len(px):
+            px = df
+        if nav is not None:
+            break
+
+    return px, nav
+
+
+def fetch_krx(ticker: str, start: str, end: str) -> pd.DataFrame:
+    """pykrx 우선, 실패 시 네이버 폴백."""
+    px, nav = None, None
+    try:
+        px, nav = fetch_pykrx(ticker, start, end)
+        if px is not None:
+            print(f"  [pykrx] {len(px):,}행"
+                  f"{' (NAV 포함)' if nav is not None else ' (NAV 없음 — KRX 인증 필요)'}")
+    except Exception as e:                             # noqa: BLE001
+        print(f"  [pykrx] 실패: {e}")
+
+    if px is None:
+        px = fetch_naver(ticker, start, end)
+        print(f"  [naver] {len(px):,}행 (폴백)")
+
+    if nav is not None:
+        for c in nav.columns:
+            px[c] = nav[c].reindex(px.index)
+
+    if "거래대금" not in px.columns:
+        px["거래대금"] = px["종가"] * px["거래량"]
+    return px
 
 
 def fetch_us_krw(ticker: str, fx: str, start: str, end: str) -> pd.DataFrame:
