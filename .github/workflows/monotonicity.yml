@@ -1,0 +1,53 @@
+name: Scalar Map Monotonicity Study
+
+# 일회성 검정 — schedule 없음 → keepalive 불필요
+on:
+  workflow_dispatch:
+    inputs:
+      horizons:
+        description: "전방수익률 기간 (거래일, 콤마 구분)"
+        required: false
+        default: "20,60,120"
+      boot_iters:
+        description: "블록 부트스트랩 반복 횟수"
+        required: false
+        default: "2000"
+      block_days:
+        description: "블록 길이 (거래일)"
+        required: false
+        default: "21"
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy pykrx requests
+
+      - name: Run monotonicity study
+        env:
+          HORIZONS: ${{ github.event.inputs.horizons }}
+          BOOT_ITERS: ${{ github.event.inputs.boot_iters }}
+          BLOCK_DAYS: ${{ github.event.inputs.block_days }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python monotonicity_study.py
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monotonicity-${{ github.run_number }}
+          path: monotonicity_report.txt
+          retention-days: 90
