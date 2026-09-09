@@ -1,0 +1,60 @@
+name: XLE Residual Study
+
+# 일회성 검정 — schedule 없음 → keepalive 불필요
+on:
+  workflow_dispatch:
+    inputs:
+      regime_window:
+        description: "레짐 판정 창 (거래일). 기본 126 ≈ 6개월"
+        required: false
+        default: "126"
+      cost_hurdle:
+        description: "C5 비용 임계값 (%/년). 474800 기준 1.4"
+        required: false
+        default: "1.4"
+      block_days:
+        description: "블록 부트스트랩 블록 길이 (거래일)"
+        required: false
+        default: "21"
+      start:
+        description: "표본 시작일 (YYYY-MM-DD)"
+        required: false
+        default: "1999-03-10"
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance requests fredapi
+
+      - name: Run residual study
+        env:
+          REGIME_WINDOW: ${{ github.event.inputs.regime_window }}
+          COST_HURDLE: ${{ github.event.inputs.cost_hurdle }}
+          BLOCK_DAYS: ${{ github.event.inputs.block_days }}
+          START: ${{ github.event.inputs.start }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 선택: 있으면 CPI>4% 보조 레짐도 검정 (합격기준 아님)
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python xle_residual_study.py
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xle-residual-${{ github.run_number }}
+          path: xle_residual_report.txt
+          retention-days: 90
