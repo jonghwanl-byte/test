@@ -1,0 +1,117 @@
+name: Backtest v2 (volume + regime filter)
+
+# 예약 실행 없음 — Actions 탭에서 필요할 때만 수동 실행합니다.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "실행 모드"
+        type: choice
+        default: "basic"
+        options:
+          - basic     # 지정한 필터 설정으로 단일 실행
+          - compare   # 필터 on/off 4조합 비교 (거래량/레짐 옵션 무시됨)
+      years:
+        description: "백테스트 기간 (년)"
+        type: choice
+        default: "10"
+        options: ["3", "5", "10", "15"]
+      band_up:
+        description: "매수 문턱 (1.03 = MA +3%)"
+        type: string
+        default: "1.03"
+      band_dn:
+        description: "매도 문턱 (0.98 = MA -2%)"
+        type: string
+        default: "0.98"
+      confirm_direction:
+        description: "상태 전환 시 당일 방향 확인"
+        type: boolean
+        default: true
+      volume_filter:
+        description: "거래량 확인 필터 사용 (basic 모드에서만 적용)"
+        type: boolean
+        default: true
+      volume_mult:
+        description: "거래량 배수 (평균거래량 대비)"
+        type: string
+        default: "1.5"
+      volume_lookback:
+        description: "평균거래량 계산 기간 (거래일)"
+        type: string
+        default: "20"
+      regime_filter:
+        description: "레짐 필터 사용 (basic 모드에서만 적용)"
+        type: boolean
+        default: true
+      regime_lookback:
+        description: "레짐 판단 비교 기간 (거래일)"
+        type: string
+        default: "20"
+
+jobs:
+  backtest-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: |
+          if [ ! -f requirements.txt ]; then
+            echo "::error::저장소 루트에 requirements.txt 가 없습니다."
+            echo "현재 루트 파일 목록:"; ls -la
+            exit 1
+          fi
+          pip install -r requirements.txt
+
+      # v2는 Volume 데이터가 추가로 필요해 기존 backtest.py 캐시와 분리된
+      # .bt_cache_v2.pkl 을 사용합니다.
+      - name: 가격+거래량 캐시 복원
+        uses: actions/cache@v4
+        with:
+          path: .bt_cache_v2.pkl
+          key: prices-v2-${{ inputs.years }}y-${{ github.run_id }}
+          restore-keys: |
+            prices-v2-${{ inputs.years }}y-
+
+      - name: 백테스트 v2 실행
+        env:
+          TZ: Asia/Seoul
+        run: |
+          ARGS="--years ${{ inputs.years }} --up ${{ inputs.band_up }} --dn ${{ inputs.band_dn }}"
+          ARGS="$ARGS --volume-mult ${{ inputs.volume_mult }} --volume-lookback ${{ inputs.volume_lookback }}"
+          ARGS="$ARGS --regime-lookback ${{ inputs.regime_lookback }}"
+          if [ "${{ inputs.confirm_direction }}" != "true" ]; then
+            ARGS="$ARGS --no-confirm"
+          fi
+          if [ "${{ inputs.mode }}" = "compare" ]; then
+            ARGS="$ARGS --compare"
+          else
+            if [ "${{ inputs.volume_filter }}" != "true" ]; then
+              ARGS="$ARGS --no-volume-filter"
+            fi
+            if [ "${{ inputs.regime_filter }}" != "true" ]; then
+              ARGS="$ARGS --no-regime-filter"
+            fi
+          fi
+          echo "실행: python backtest_v2.py $ARGS"
+          python backtest_v2.py $ARGS
+
+      - name: 결과 파일 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-v2-${{ inputs.mode }}-${{ inputs.years }}y
+          path: |
+            backtest_v2_result.csv
+            backtest_v2_compare.csv
+          if-no-files-found: warn
+          retention-days: 30
