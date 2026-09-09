@@ -67,6 +67,7 @@ MA_PERIODS = [20, 120, 200]
 BAND_UP = 1.015
 BAND_DN = 0.975
 WARMUP_EXTRA = 250
+EXEC_LAG = 1          # 당일 종가로 산출 → 익영업일 집행. 룩어헤드 방지에 필수
 
 KRX_START = "20050101"
 KRX_CHUNK_YEARS = 6
@@ -228,7 +229,12 @@ def build_panel(prices: dict) -> pd.DataFrame:
         d = pd.DataFrame({"score": sc, "label": lab})
         d["asset"] = code
         for h in HORIZONS:
-            fwd = close.shift(-h) / close - 1
+            # t일 종가로 스코어를 산출하고 t+EXEC_LAG 에 집행하므로,
+            # 전방수익률도 t+LAG 진입 → t+LAG+h 청산으로 잡는다.
+            # close(t+h)/close(t) 로 계산하면 룩어헤드가 된다.
+            entry = close.shift(-EXEC_LAG)
+            exitp = close.shift(-(EXEC_LAG + h))
+            fwd = exitp / entry - 1
             d[f"f{h}"] = fwd.reindex(sc.index)
         frames.append(d.reset_index().rename(columns={"index": "date"}))
 
