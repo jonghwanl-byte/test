@@ -1,0 +1,56 @@
+name: Engine Calibration
+
+# 일회성 진단 — schedule 없음 → keepalive 불필요
+on:
+  workflow_dispatch:
+    inputs:
+      target_mdd:
+        description: "기존 리포트 전체 MDD (%)"
+        required: false
+        default: "-16.41"
+      target_episodes:
+        description: "기존 리포트 -8% 에피소드 건수"
+        required: false
+        default: "8"
+      target_2015_strat:
+        description: "2015 구간 전략 수익률 (%)"
+        required: false
+        default: "0.87"
+      target_2015_qqq:
+        description: "2015 구간 QQQ 수익률 (%)"
+        required: false
+        default: "17.90"
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance
+
+      - name: Run calibration
+        env:
+          TARGET_MDD: ${{ github.event.inputs.target_mdd }}
+          TARGET_EPISODES: ${{ github.event.inputs.target_episodes }}
+          TARGET_2015_STRAT: ${{ github.event.inputs.target_2015_strat }}
+          TARGET_2015_QQQ: ${{ github.event.inputs.target_2015_qqq }}
+        run: python calibrate_engine.py
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-${{ github.run_number }}
+          path: calibration_report.txt
+          retention-days: 90
