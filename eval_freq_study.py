@@ -70,21 +70,40 @@ CASH_YIELD = env("CASH_YIELD", 0.0) # 연 %
 DD_THRESHOLD = env("DD_THRESHOLD", -8.0)
 TRADING_DAYS = 252
 
+EPISODE_2015 = (env("EP15_START", "2015-07-17"), env("EP15_END", "2017-02-17"))
+BASE_GAP_2015 = -17.03        # 기준선 구간 QQQ 대비 격차(%p)
+TARGET_GAP_2015 = -12.0       # E3' 합격선
+BASE_SWITCH_2015 = 40         # 기준선 구간 비중 변경 횟수
+TARGET_SWITCH_2015 = 25       # E6 합격선
+
 VARIANTS = ["daily", "weekly", "monthly"]
 N_TRIALS = len(VARIANTS)            # DSR 시행 횟수
 REPORT_PATH = "eval_freq_report.txt"
 
 # ---------- 사전 합격기준 (실행 전 확정) ----------------------
 ACCEPTANCE = [
+    "[지키는 조건]",
     "E1. 전체 MDD 가 일간 기준선보다 악화되지 않을 것",
     "E2. 2008·2022 방어폭이 기준선 대비 5pp 이내 열화",
-    "E3. 최장 회복 기간 279일 → 200일 이하로 단축",
-    "E4. Sharpe 개선 + DSR > 0.95 (시행 3회 반영)",
-    "E5. 전후반 분할 표본 모두에서 E1·E3 방향 일치",
     "",
-    "→ E1~E5 전부 충족한 변형만 채택 후보로 본다.",
+    "[개선을 확인하는 조건]",
+    f"E3'. 2015 구간({EPISODE_2015[0]}~{EPISODE_2015[1]}) QQQ 대비 격차",
+    f"     {BASE_GAP_2015:+.2f}%p → {TARGET_GAP_2015:+.1f}%p 이내로 개선",
+    f"E6. 같은 구간 비중 변경 횟수 {BASE_SWITCH_2015}회 → "
+    f"{TARGET_SWITCH_2015}회 이하",
+    "",
+    "[우연이 아님을 확인하는 조건]",
+    "E4. Sharpe 개선 + DSR > 0.95 (시행 3회 반영)",
+    "E5. 전후반 분할 표본 모두에서 E1 방향 일치",
+    "",
+    "→ E1~E6 전부 충족한 변형만 채택 후보로 본다.",
     "→ 하나라도 미충족 시 현행 일간 평가를 유지한다.",
-    "→ E3 이 이 실험의 존재 이유, E2 가 안전장치다.",
+    "",
+    "[E3 수정 이력] 2026-09-09. 당초 E3 는 '최장 회복 279일 → 200일 이하'",
+    "  였으나, 2015 구간 상세 분석에서 낙폭 -11.60% 로 QQQ(-16.10%) 대비",
+    "  방어는 성공했고 실제 문제는 이후 상승장 미참여(격차 -17.03%p)임이",
+    "  확인되어 격차 기준으로 대체. 변형 결과 확인 전에 수정함.",
+    "  E6 은 개선의 인과(매매 감소 → 격차 축소)를 확인하기 위해 신설.",
 ]
 # =======================================================================
 
@@ -264,6 +283,37 @@ def match_episode(eps, year):
 # ==============================================================
 # REPORT
 # ==============================================================
+def episode_2015(px: pd.DataFrame, freq: str, bench_eq: pd.Series) -> dict:
+    """2015 구간의 QQQ 대비 격차와 비중 변경 횟수를 측정한다.
+
+    이 구간의 문제는 낙폭이 아니라 상승장 미참여였으므로,
+    회복일수가 아닌 '격차'와 '매매 빈도'를 본다.
+    """
+    a, b = EPISODE_2015
+    res = run(px, freq)
+    seg = res.loc[a:b]
+    if seg.empty:
+        return {"gap": np.nan, "switches": np.nan,
+                "strat": np.nan, "qqq": np.nan, "mdd": np.nan}
+
+    strat = (1 + seg["ret"]).prod() - 1
+    bseg = bench_eq.loc[a:b]
+    qqq = bseg.iloc[-1] / bseg.iloc[0] - 1
+
+    # 비중 변경 횟수: 집행된 목표비중이 실제로 바뀐 날의 수
+    w = build_weights(px, freq).loc[a:b]
+    changed = (w.diff().abs().sum(axis=1) > 1e-9).sum()
+
+    eq = (1 + seg["ret"]).cumprod()
+    return {
+        "gap": (strat - qqq) * 100,
+        "switches": int(changed),
+        "strat": strat * 100,
+        "qqq": qqq * 100,
+        "mdd": (eq / eq.cummax() - 1).min() * 100,
+    }
+
+
 def print_criteria():
     line = "=" * 74
     print(line)
@@ -336,34 +386,40 @@ def main():
     print("\n" + line)
     print(" [4] 판정 근거 지표")
     print(line)
-    print(f"  {'변형':<10}{'MDD':>9}{'2015회복':>10}{'2008방어':>10}"
-          f"{'2022방어':>10}{'최장회복':>10}")
+    print(f"  {'변형':<10}{'MDD':>9}{'2008방어':>10}{'2022방어':>10}")
     rows = {}
     for v in VARIANTS:
         eps = eps_all[v]
-        e15 = match_episode(eps, 2016) or match_episode(eps, 2015)
         e08 = match_episode(eps, 2008)
         e22 = match_episode(eps, 2022)
 
-        def defend(e, qqq_dd):
-            return (qqq_dd - e["depth"]) if e else np.nan
-
-        # 동기간 QQQ 낙폭을 직접 계산
         def qqq_depth(e):
             if not e:
                 return np.nan
             seg = bench_eq.loc[e["peak"]:e["trough"]]
             return (seg.iloc[-1] / seg.iloc[0] - 1) * 100
 
-        d08 = defend(e08, qqq_depth(e08))
-        d22 = defend(e22, qqq_depth(e22))
-        r15 = e15["rec_days"] if e15 else np.nan
-        longest = max((e["rec_days"] for e in eps
-                       if pd.notna(e["rec_days"])), default=np.nan)
-        rows[v] = dict(mdd=mets[v]["MDD"], r15=r15, d08=d08,
-                       d22=d22, longest=longest)
-        print(f"  {v:<10}{mets[v]['MDD']:>8.2f}%{r15:>10.0f}"
-              f"{d08:>9.1f}p{d22:>9.1f}p{longest:>10.0f}")
+        d08 = (qqq_depth(e08) - e08["depth"]) if e08 else np.nan
+        d22 = (qqq_depth(e22) - e22["depth"]) if e22 else np.nan
+        rows[v] = dict(mdd=mets[v]["MDD"], d08=d08, d22=d22)
+        print(f"  {v:<10}{mets[v]['MDD']:>8.2f}%{d08:>9.1f}p{d22:>9.1f}p")
+
+    # ---- 4b. 2015 구간 상세 (E3' / E6) ----
+    print("\n" + line)
+    print(f" [4b] 2015 구간 상세  {EPISODE_2015[0]} ~ {EPISODE_2015[1]}")
+    print(line)
+    print(f"  {'변형':<10}{'전략':>9}{'QQQ':>9}{'격차':>10}"
+          f"{'MDD':>9}{'변경횟수':>10}")
+    ep15 = {}
+    for v in VARIANTS:
+        e = episode_2015(px, v, bench_eq)
+        ep15[v] = e
+        print(f"  {v:<10}{e['strat']:>8.2f}%{e['qqq']:>8.2f}%"
+              f"{e['gap']:>9.2f}p{e['mdd']:>8.2f}%{e['switches']:>10d}")
+    print(f"\n  기준선 대조: 격차 {BASE_GAP_2015:+.2f}%p / "
+          f"변경 {BASE_SWITCH_2015}회  (기존 리포트)")
+    print(f"  합격선     : 격차 {TARGET_GAP_2015:+.1f}%p 이내 / "
+          f"변경 {TARGET_SWITCH_2015}회 이하")
 
     # ---- 5. 전후반 분할 ----
     print("\n" + line)
@@ -394,23 +450,33 @@ def main():
     base_m = mets["daily"]
     any_pass = False
     for v in VARIANTS[1:]:
-        rr, mm = rows[v], mets[v]
+        rr, mm, ee = rows[v], mets[v], ep15[v]
         d = dsr(mm["Sharpe"], mm["n"], mm["skew"], mm["kurt"], N_TRIALS)
         e1 = rr["mdd"] >= base["mdd"] - 1e-9
         e2 = (rr["d08"] >= base["d08"] - 5) and (rr["d22"] >= base["d22"] - 5)
-        e3 = pd.notna(rr["longest"]) and rr["longest"] <= 200
+        e3 = pd.notna(ee["gap"]) and ee["gap"] >= TARGET_GAP_2015
+        e6 = pd.notna(ee["switches"]) and ee["switches"] <= TARGET_SWITCH_2015
         e4 = (mm["Sharpe"] > base_m["Sharpe"]) and (d > 0.95)
         h, hb = halves[v], halves["daily"]
         e5 = (h[1] >= hb[1] - 1e-9) and (h[3] >= hb[3] - 1e-9)
-        ok = all([e1, e2, e3, e4, e5])
+        ok = all([e1, e2, e3, e6, e4, e5])
         any_pass |= ok
         print(f"\n  ── {v}")
-        for k, val in (("E1 MDD 비악화", e1), ("E2 방어폭 유지", e2),
-                       ("E3 최장회복 ≤200일", e3),
-                       ("E4 Sharpe↑ & DSR>0.95", e4),
-                       ("E5 전후반 일관", e5)):
-            print(f"     {k:<24}{'✓' if val else '✗'}")
+        for k, val in (
+            ("E1 MDD 비악화", e1),
+            ("E2 방어폭 유지", e2),
+            (f"E3' 2015 격차 ≥{TARGET_GAP_2015:.0f}%p", e3),
+            (f"E6 변경 ≤{TARGET_SWITCH_2015}회", e6),
+            ("E4 Sharpe↑ & DSR>0.95", e4),
+            ("E5 전후반 일관", e5),
+        ):
+            print(f"     {k:<26}{'✓' if val else '✗'}")
         print(f"     → {'채택 후보' if ok else '기각'}")
+
+        # 인과 점검: 격차만 좋아지고 매매는 그대로면 경고
+        if e3 and not e6:
+            print("     ⚠ 격차는 개선됐으나 매매 빈도는 그대로 —")
+            print("       가설한 인과(매매 감소 → 격차 축소)가 아닐 수 있음")
 
     print("\n" + line)
     if any_pass:
