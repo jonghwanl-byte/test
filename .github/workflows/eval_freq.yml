@@ -1,0 +1,58 @@
+name: Eval Frequency Study
+
+# 일회성 실험 — schedule 없음 → keepalive 불필요
+on:
+  workflow_dispatch:
+    inputs:
+      cost_bps:
+        description: "편도 거래비용 (bp). 회전율 1단위당"
+        required: false
+        default: "5"
+      cash_yield:
+        description: "현금 연수익률 (%). 0이면 무이자 가정"
+        required: false
+        default: "0"
+      dd_threshold:
+        description: "에피소드 판정 낙폭 (%). 기존 리포트와 맞추려면 -8"
+        required: false
+        default: "-8"
+      eval_start:
+        description: "평가 시작일. GLD 상장일 2004-11-18"
+        required: false
+        default: "2004-11-18"
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy scipy yfinance requests
+
+      - name: Run eval frequency study
+        env:
+          COST_BPS: ${{ github.event.inputs.cost_bps }}
+          CASH_YIELD: ${{ github.event.inputs.cash_yield }}
+          DD_THRESHOLD: ${{ github.event.inputs.dd_threshold }}
+          EVAL_START: ${{ github.event.inputs.eval_start }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python eval_freq_study.py
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-freq-${{ github.run_number }}
+          path: eval_freq_report.txt
+          retention-days: 90
