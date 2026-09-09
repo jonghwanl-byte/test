@@ -1,0 +1,91 @@
+name: Transition Analysis
+
+# 예약 실행 없음 — Actions 탭에서 필요할 때만 수동 실행합니다.
+on:
+  workflow_dispatch:
+    inputs:
+      ma_config:
+        description: "MA 구성"
+        type: choice
+        default: "full"
+        options:
+          - full     # 20/60/120/200 (4개, 현재 운영 구성)
+          - drop60   # 20/120/200 (60일선 제외, 3개)
+      years:
+        description: "분석 기간 (년)"
+        type: choice
+        default: "10"
+        options: ["3", "5", "10", "15"]
+      horizons:
+        description: "전환 후 확인할 거래일 수 (콤마 구분)"
+        type: string
+        default: "5,10,20,60"
+      band_up:
+        description: "매수 문턱 (1.03 = MA +3%)"
+        type: string
+        default: "1.03"
+      band_dn:
+        description: "매도 문턱 (0.98 = MA -2%)"
+        type: string
+        default: "0.98"
+      confirm_direction:
+        description: "상태 전환 시 당일 방향 확인"
+        type: boolean
+        default: true
+
+jobs:
+  transition-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: |
+          if [ ! -f requirements.txt ]; then
+            echo "::error::저장소 루트에 requirements.txt 가 없습니다."
+            echo "현재 루트 파일 목록:"; ls -la
+            exit 1
+          fi
+          pip install -r requirements.txt
+
+      # backtest.py 실행 시 만들어지는 캐시를 그대로 재사용 (같은 날 재다운로드 방지)
+      - name: 가격 캐시 복원
+        uses: actions/cache@v4
+        with:
+          path: .bt_cache.pkl
+          key: prices-${{ inputs.years }}y-${{ github.run_id }}
+          restore-keys: |
+            prices-${{ inputs.years }}y-
+
+      - name: 전환 구간 분석 실행
+        env:
+          TZ: Asia/Seoul
+        run: |
+          ARGS="--years ${{ inputs.years }} --horizons ${{ inputs.horizons }} --up ${{ inputs.band_up }} --dn ${{ inputs.band_dn }}"
+          if [ "${{ inputs.ma_config }}" = "drop60" ]; then
+            ARGS="$ARGS --drop60"
+          fi
+          if [ "${{ inputs.confirm_direction }}" != "true" ]; then
+            ARGS="$ARGS --no-confirm"
+          fi
+          echo "실행: python transition_analysis.py $ARGS"
+          python transition_analysis.py $ARGS
+
+      - name: 결과 파일 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transition-${{ inputs.ma_config }}-${{ inputs.years }}y
+          path: |
+            transition_events_full.csv
+            transition_events_drop60.csv
+          if-no-files-found: warn
+          retention-days: 30
