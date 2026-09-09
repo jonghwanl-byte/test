@@ -1,58 +1,92 @@
-name: gold-premium-backtest
+name: Backtest
 
+# 예약 실행 없음 — Actions 탭에서 필요할 때만 수동 실행합니다.
 on:
-  workflow_dispatch:          # Actions 탭에서 수동 실행
-  schedule:
-    # 07:00 UTC = 16:00 KST (KRX 장 마감 15:30 이후). cron 은 항상 UTC 기준.
-    - cron: "0 7 * * 1-5"
-
-permissions:
-  contents: write             # data.csv 커밋용
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "실행 모드"
+        type: choice
+        default: "basic"
+        options:
+          - basic      # 지정한 밴드로 종목별 성과 계산
+          - sweep      # 밴드 조합 그리드 서치 (학습/검증 분리)
+          - stress     # 주요 하락 구간만 떼어내 방어력 비교
+      years:
+        description: "백테스트 기간 (년)"
+        type: choice
+        default: "10"
+        options: ["3", "5", "10", "15"]
+      band_up:
+        description: "매수 문턱 (1.03 = MA +3%)"
+        type: string
+        default: "1.03"
+      band_dn:
+        description: "매도 문턱 (0.98 = MA -2%)"
+        type: string
+        default: "0.98"
+      confirm_direction:
+        description: "상태 전환 시 당일 방향 확인"
+        type: boolean
+        default: true
 
 jobs:
-  run:
+  backtest:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
-      - uses: actions/checkout@v6
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v6
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements.txt
+          python-version: "3.11"
 
-      - run: pip install -r requirements.txt
-
-      - name: 데이터 갱신
-        id: fetch
-        continue-on-error: true      # KRX 차단 시 워크플로 전체를 죽이지 않음
-        run: python fetch_krx_gold.py
-
-      - name: 백테스트
+      - name: 의존성 설치
         run: |
-          if [ ! -f data.csv ]; then
-            echo "::error::data.csv 가 없습니다. 수집이 실패했고 커밋된 데이터도 없습니다."
+          if [ ! -f requirements.txt ]; then
+            echo "::error::저장소 루트에 requirements.txt 가 없습니다."
+            echo "현재 루트 파일 목록:"; ls -la
             exit 1
           fi
-          python gold_premium_backtest.py data.csv \
-            --split 2026-04-18 \
-            --plot premium_backtest.png | tee report.txt
+          pip install -r requirements.txt
 
-      - name: 결과 아티팩트 업로드
-        if: always()
-        uses: actions/upload-artifact@v6
+      # 같은 날 반복 실행 시 Yahoo를 다시 부르지 않도록 가격 캐시를 재사용
+      - name: 가격 캐시 복원
+        uses: actions/cache@v4
         with:
-          name: backtest-${{ github.run_number }}
-          path: |
-            report.txt
-            premium_backtest.png
-          if-no-files-found: warn
+          path: .bt_cache.pkl
+          key: prices-${{ inputs.years }}y-${{ github.run_id }}
+          restore-keys: |
+            prices-${{ inputs.years }}y-
 
-      - name: 갱신된 데이터 커밋
-        if: steps.fetch.outcome == 'success'
+      - name: 백테스트 실행
+        env:
+          TZ: Asia/Seoul
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data.csv
-          git diff --staged --quiet || git commit -m "data: $(date -u +%Y-%m-%d)"
-          git push
+          ARGS="--years ${{ inputs.years }}"
+          if [ "${{ inputs.mode }}" = "sweep" ]; then
+            ARGS="$ARGS --sweep"
+          elif [ "${{ inputs.mode }}" = "stress" ]; then
+            ARGS="$ARGS --stress --up ${{ inputs.band_up }} --dn ${{ inputs.band_dn }}"
+          else
+            ARGS="$ARGS --up ${{ inputs.band_up }} --dn ${{ inputs.band_dn }}"
+          fi
+          if [ "${{ inputs.confirm_direction }}" != "true" ]; then
+            ARGS="$ARGS --no-confirm"
+          fi
+          echo "실행: python backtest.py $ARGS"
+          python backtest.py $ARGS
+
+      - name: 결과 파일 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-${{ inputs.mode }}-${{ inputs.years }}y
+          path: |
+            backtest_result.csv
+            sweep_result.csv
+          if-no-files-found: warn
+          retention-days: 30
