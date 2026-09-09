@@ -168,29 +168,50 @@ def fetch_krx(ticker: str, start: str, end: str) -> pd.DataFrame:
 
 
 def fetch_us_krw(ticker: str, fx: str, start: str, end: str) -> pd.DataFrame:
-    """yfinance: XLE 배당재투자(TR) 종가 * USDKRW"""
+    """yfinance: XLE 총수익(TR) / 가격(PR) 종가 + USDKRW
+
+    TR = auto_adjust=True (배당 재투자)
+    PR = auto_adjust=False 의 Close (배당 제외)
+    두 계열을 모두 받아 ETF가 어느 쪽을 추종하는지 판별한다.
+    """
     import yfinance as yf
 
-    px = yf.download(ticker, start=start, end=end,
-                     auto_adjust=True, progress=False)   # TR 필수
+    tr = yf.download(ticker, start=start, end=end,
+                     auto_adjust=True, progress=False)
+    pr = yf.download(ticker, start=start, end=end,
+                     auto_adjust=False, progress=False)
     fxd = yf.download(fx, start=start, end=end,
                       auto_adjust=True, progress=False)
 
-    if px.empty or fxd.empty:
+    if tr.empty or fxd.empty:
         raise RuntimeError("yfinance 데이터 없음")
 
-    def close_col(d):
-        c = d["Close"]
+    def close_col(d, field="Close"):
+        c = d[field]
         return c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c
 
-    s_px = close_col(px)
-    s_fx = close_col(fxd)
+    out = pd.DataFrame({
+        "xle_tr_usd": close_col(tr),
+        "xle_pr_usd": close_col(pr) if not pr.empty else close_col(tr),
+        "usdkrw": close_col(fxd),
+    })
+    idx = pd.to_datetime(out.index)
+    out.index = idx.tz_localize(None) if idx.tz is not None else idx
+    return out.ffill().dropna()
 
-    out = pd.DataFrame({"xle_usd": s_px, "usdkrw": s_fx})
-    out.index = pd.to_datetime(out.index).tz_localize(None)
-    out = out.ffill().dropna()
-    out["xle_krw"] = out["xle_usd"] * out["usdkrw"]
-    return out
+
+def align_proxy(krx_index, us: pd.DataFrame, col: str,
+                eq_lag: int, fx_lag: int) -> pd.Series:
+    """KRX 거래일 축에 미국 시계열을 정렬한다.
+
+    KRX 종가는 '전일 미국 종가 × 당일 한국시간 환율'을 반영하므로
+    주가 시차(eq_lag)와 환율 시차(fx_lag)가 서로 다르다. 둘을 분리해
+    각각 밀어 본 뒤 상관이 최대가 되는 조합을 채택한다.
+    """
+    full = krx_index.union(us.index)
+    eq = us[col].reindex(full).ffill().reindex(krx_index).shift(eq_lag)
+    fx = us["usdkrw"].reindex(full).ffill().reindex(krx_index).shift(fx_lag)
+    return eq * fx
 
 
 # ==============================================================
@@ -209,6 +230,18 @@ def ann_diff(a: pd.Series, b: pd.Series) -> float:
     return (ca - cb) * 100
 
 
+def lag_grid(df: pd.DataFrame, us: pd.DataFrame, col: str, max_lag: int = 2):
+    """(eq_lag, fx_lag) 조합별 일수익률 상관을 표로 만든다."""
+    r_close = df["close"].pct_change()
+    rows = []
+    for eq in range(max_lag + 1):
+        for fx in range(max_lag + 1):
+            proxy = align_proxy(df.index, us, col, eq, fx)
+            c = r_close.corr(proxy.pct_change())
+            rows.append((eq, fx, c))
+    return sorted(rows, key=lambda x: -(x[2] if pd.notna(x[2]) else -9))
+
+
 def build(krx: pd.DataFrame, us: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(index=krx.index)
     df["close"] = krx["종가"]
@@ -224,12 +257,16 @@ def build(krx: pd.DataFrame, us: pd.DataFrame) -> pd.DataFrame:
     if "nav" in df:
         df["disparity_pct"] = (df["close"] / df["nav"] - 1) * 100
 
-    # XLE 원화환산 프록시 (LAG_DAYS 반영)
-    xle = us["xle_krw"].reindex(
-        df.index.union(us.index)).ffill().reindex(df.index)
-    df["xle_krw"] = xle.shift(LAG_DAYS)
+    # 주가/환율 시차를 분리해 상관 최대 조합을 찾는다
+    grid = lag_grid(df, us, "xle_tr_usd")
+    eq_lag, fx_lag, best_corr = grid[0]
+    df.attrs["grid"] = grid
+    df.attrs["lags"] = (eq_lag, fx_lag, best_corr)
 
-    for c in ["close", "nav", "bm_index", "xle_krw"]:
+    df["xle_tr"] = align_proxy(df.index, us, "xle_tr_usd", eq_lag, fx_lag)
+    df["xle_pr"] = align_proxy(df.index, us, "xle_pr_usd", eq_lag, fx_lag)
+
+    for c in ["close", "nav", "bm_index", "xle_tr", "xle_pr"]:
         if c in df:
             df[f"r_{c}"] = df[c].pct_change()
     return df
@@ -237,10 +274,18 @@ def build(krx: pd.DataFrame, us: pd.DataFrame) -> pd.DataFrame:
 
 def report(df: pd.DataFrame) -> None:
     line = "=" * 62
+    eq_lag, fx_lag, best_corr = df.attrs["lags"]
     print(line)
     print(f" 218420 추적차이 진단  |  {df.index[0]:%Y-%m-%d} ~ {df.index[-1]:%Y-%m-%d}")
-    print(f" 관측치 {len(df):,}일  |  LAG_DAYS={LAG_DAYS}")
+    print(f" 관측치 {len(df):,}일  |  채택 시차: 주가 {eq_lag}일 / 환율 {fx_lag}일")
     print(line)
+
+    print("\n[0] 시차 조합별 일수익률 상관 (상위 4개)")
+    for eq, fx, c in df.attrs["grid"][:4]:
+        star = " ←채택" if (eq, fx) == (eq_lag, fx_lag) else ""
+        print(f"    주가 {eq}일 / 환율 {fx}일 : {c:.4f}{star}")
+    if best_corr < 0.90:
+        print("  ⚠ 최대 상관도 0.90 미만 — 프록시 자체가 부적합할 수 있음")
 
     # --- 1차: NAV vs 기초지수 -----------------------------------
     print("\n[1] 추적차이 — NAV vs 기초지수  (핵심 지표)")
@@ -265,20 +310,48 @@ def report(df: pd.DataFrame) -> None:
         for y, v in rows:
             print(f"    {y}  {v:+.3f}")
     else:
-        print("  NAV/기초지수 컬럼 없음 — pykrx 버전 확인 필요")
+        print("  NAV/기초지수 컬럼 없음 — KRX 인증(KRX_ID/KRX_PW) 필요")
+
 
     # --- 2차: 종가 vs XLE 프록시 --------------------------------
     print("\n[2] 백테스트 프록시 타당성 — 종가 vs XLE 원화환산 TR")
-    sub = df[["close", "xle_krw", "r_close", "r_xle_krw"]].dropna()
+    sub = df[["close", "xle_tr", "xle_pr", "r_close",
+              "r_xle_tr", "r_xle_pr"]].dropna()
     if len(sub) > 60:
-        td2 = ann_diff(sub["close"], sub["xle_krw"])
-        corr = sub["r_close"].corr(sub["r_xle_krw"])
-        te2 = (sub["r_close"] - sub["r_xle_krw"]).std() * np.sqrt(TRADING_DAYS) * 100
-        print(f"  연환산 차이     : {td2:+.3f} %p")
-        print(f"  일수익률 상관   : {corr:.4f}"
-              f"  {'✓' if corr > 0.90 else '⚠ 낮음 — LAG_DAYS 조정 검토'}")
-        print(f"  추적오차(TE)    : {te2:.3f} %")
-        print(f"  → 장기 백테스트에 적용할 연비용 가정: {max(0.0, -td2):.2f} %/년")
+        td_tr = ann_diff(sub["close"], sub["xle_tr"])
+        td_pr = ann_diff(sub["close"], sub["xle_pr"])
+        corr = sub["r_close"].corr(sub["r_xle_tr"])
+        te2 = (sub["r_close"] - sub["r_xle_tr"]).std() * np.sqrt(TRADING_DAYS) * 100
+
+        print(f"  vs XLE 총수익(TR) : {td_tr:+.3f} %p/년")
+        print(f"  vs XLE 가격(PR)   : {td_pr:+.3f} %p/년")
+        print(f"  일수익률 상관     : {corr:.4f}")
+        print(f"  추적오차(TE)      : {te2:.3f} %")
+
+        # 배당 누락 판별: PR 기준 격차가 작으면 ETF는 가격지수만 추종
+        div_yield = td_pr - td_tr          # TR-PR 격차 = 배당 기여
+        print(f"\n  XLE 배당 기여 추정: {div_yield:+.2f} %p/년")
+        if abs(td_pr) < 1.0 and td_tr < -2.0:
+            print("  → 판정: ETF가 가격지수(PR)를 추종. 배당이 소멸하고 있음")
+            print("     장기 백테스트는 XLE '가격수익률'로 돌려야 함")
+            cost = max(0.0, -td_pr)
+        elif td_tr < -2.0:
+            print("  → 판정: PR 기준으로도 격차가 큼. 스왑 비용 과다 의심")
+            cost = max(0.0, -td_tr)
+        else:
+            print("  → 판정: 총수익(TR) 정상 추종")
+            cost = max(0.0, -td_tr)
+        print(f"  → 백테스트 연비용 가정: {cost:.2f} %/년")
+
+        print("\n  연도별 격차 (vs TR / vs PR, %p):")
+        g = sub[["close", "xle_tr", "xle_pr"]]
+        for y, blk in g.groupby(g.index.year):
+            if len(blk) < 60:
+                continue
+            r_c = blk["close"].iloc[-1] / blk["close"].iloc[0]
+            a = (r_c - blk["xle_tr"].iloc[-1] / blk["xle_tr"].iloc[0]) * 100
+            b = (r_c - blk["xle_pr"].iloc[-1] / blk["xle_pr"].iloc[0]) * 100
+            print(f"    {y}  {a:+7.2f}  /  {b:+7.2f}")
 
     # --- 3차: 괴리율 --------------------------------------------
     print("\n[3] 괴리율 분포 (시장가 vs NAV)")
