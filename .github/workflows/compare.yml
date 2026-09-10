@@ -1,0 +1,45 @@
+name: Compare
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "비교 기간 (년)"
+        type: choice
+        default: "20"
+        options: ["10", "15", "20", "25"]
+      split:
+        description: "전반/후반 나눠 안정성 확인"
+        type: boolean
+        default: true
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: |
+          if [ ! -f requirements.txt ]; then
+            echo "::error::저장소 루트에 requirements.txt 가 없습니다."
+            ls -la; exit 1
+          fi
+          pip install -r requirements.txt
+
+      - name: 비교 실행
+        env:
+          TZ: Asia/Seoul
+        run: |
+          ARGS="--years ${{ inputs.years }}"
+          if [ "${{ inputs.split }}" = "true" ]; then ARGS="$ARGS --split"; fi
+          python compare.py $ARGS | tee output.txt
+          {
+            echo "## 지수 비교 (${{ inputs.years }}년)"
+            echo ''; echo '```'; cat output.txt; echo '```'
+          } >> $GITHUB_STEP_SUMMARY
