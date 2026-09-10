@@ -45,10 +45,10 @@ TICKERS = {
     "XLF": "금융", "XLV": "헬스케어", "XLP": "필수소비재",
     "XLU": "유틸리티", "XLRE": "부동산",
 }
-MA_PERIODS = [20, 60, 120, 200]
-SCALAR_MAP = {4: 1.00, 3: 0.75, 2: 0.50, 1: 0.25, 0: 0.00}
+MA_PERIODS = [20, 120, 200]
+SCALAR_MAP = {3: 1.00, 2: 0.66, 1: 0.33, 0: 0.00}
 
-BAND_UP = 1.03            # 매수(ON) 문턱
+BAND_UP = 1.02            # 매수(ON) 문턱
 BAND_DN = 0.98            # 매도(OFF) 문턱
 CONFIRM_DIRECTION = True
 
